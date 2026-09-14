@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      try {
+        if (localStorage.getItem('bsuir-flow-theme') === 'light') document.documentElement.dataset.theme = 'light';
+      } catch { /* Dark is the default even when storage is unavailable. */ }
+    </script>
+    <style>html{background:#191c28;color-scheme:dark}html[data-theme="light"]{background:#f7f3ec;color-scheme:light}@media print{html{background:#fff;color-scheme:light}}</style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#191c28" />
+    <meta name="description" content="От студента для студентов: превращай код на C в блок-схемы, добавляй подписи из комментариев и сохраняй результат. Бесплатно, прямо в браузере. Независимый студенческий проект." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>BSUIR flow — твоя логика в красивой форме</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
