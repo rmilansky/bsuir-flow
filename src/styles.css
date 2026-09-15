@@ -168,6 +168,18 @@ main { max-width: 1512px; margin: auto; padding: 0 5%; }
 .diagram-position { display: flex; align-items: center; justify-content: center; padding: 18px 24px; }
 .flow-svg { display: block; overflow: visible; }
 .flow-node { cursor: pointer; outline: none; }
+.flow-svg.is-editable .flow-node { cursor: grab; touch-action: none; }
+.flow-svg.is-editable .flow-node:active { cursor: grabbing; }
+.flow-svg.is-editable { user-select: none; touch-action: none; }
+.edge-hit-area { cursor: grab; touch-action: none; outline: none; }
+.edge-hit-area:focus-visible + .edge-line { stroke: #617ccc; stroke-width: 3; }
+.edge-hit-area:active { cursor: grabbing; }
+.edge-handle { touch-action: none; outline: none; }
+.edge-handle.horizontal { cursor: ns-resize; }
+.edge-handle.vertical { cursor: ew-resize; }
+.edge-handle:focus-visible circle:last-child { fill: #b6c6ff; }
+.reset-layout { font-size: 9px; gap: 5px; white-space: nowrap; }
+.reset-layout:disabled { opacity: .45; cursor: default; }
 .flow-node:focus-visible > rect, .flow-node:focus-visible > polygon { stroke: #617ccc; stroke-width: 3; }
 .flow-node:hover > rect, .flow-node:hover > polygon { stroke: #617ccc; stroke-width: 2; }
 .is-loading .diagram-scroll { opacity: .4; pointer-events: none; }

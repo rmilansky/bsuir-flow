@@ -5,6 +5,7 @@ import CodeEditor from './components/CodeEditor';
 import BsuirLogo, { BsuirMark } from './components/BsuirLogo';
 import Diagram, { shapeNames } from './components/Diagram';
 import type { FlowGraph, FlowNode } from './lib/graph';
+import { restoreDiagramLayout } from './lib/diagramEditing';
 import { examples } from './lib/examples';
 import { readSimplification, SIMPLIFICATION_KEY, simplificationOptions, type SimplificationSettings } from './lib/simplification';
 
@@ -67,6 +68,8 @@ export default function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [selected, setSelected] = useState<string>();
+  const [selectedEdge, setSelectedEdge] = useState<string>();
+  const [layoutEdited, setLayoutEdited] = useState(false);
   const [labelDraft, setLabelDraft] = useState('');
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [focusLine, setFocusLine] = useState<number>();
@@ -78,6 +81,9 @@ export default function App() {
   const input = useRef<HTMLInputElement>(null);
   const canvas = useRef<HTMLDivElement>(null);
   const worker = useRef<Worker | null>(null);
+  const automaticGraph = useRef<FlowGraph | null>(null);
+  const manualGraph = useRef<FlowGraph | null>(null);
+  const layoutScope = useRef('');
   const request = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const dirty = source !== code;
@@ -92,7 +98,10 @@ export default function App() {
       if (data.id !== request.current) return;
       clearTimeout(timer.current); setBusy(false);
       if (data.error) { setError({ message: data.error, line: data.line }); return; }
-      setError(null); setGraph(data.graph!); setFunctions(data.functions); setFunctionName(data.functionName); setWarnings(data.warnings);
+      automaticGraph.current = data.graph!;
+      const laidOut = manualGraph.current ? restoreDiagramLayout(data.graph!, manualGraph.current) : data.graph!;
+      if (manualGraph.current) manualGraph.current = laidOut;
+      setError(null); setGraph(laidOut); setFunctions(data.functions); setFunctionName(data.functionName); setWarnings(data.warnings);
     };
     current.onerror = () => { clearTimeout(timer.current); setBusy(false); setError({ message: 'Не удалось запустить генератор. Обновите страницу и попробуйте ещё раз.' }); };
     return () => { clearTimeout(timer.current); current.terminate(); worker.current = null; };
@@ -100,7 +109,11 @@ export default function App() {
 
   useEffect(() => {
     const id = ++request.current;
-    setBusy(true); setError(null); setSelected(undefined);
+    const scope = JSON.stringify([source, functionName, simplification]);
+    if (scope !== layoutScope.current) {
+      manualGraph.current = null; setLayoutEdited(false); layoutScope.current = scope;
+    }
+    setBusy(true); setError(null); setSelected(undefined); setSelectedEdge(undefined);
     worker.current?.postMessage({ id, code: source, functionName, options: {
       comments, overrides,
       hideExitReturn: simplification.enabled && simplification.hideExitReturn,
@@ -172,7 +185,14 @@ export default function App() {
     finally { setExporting(false); }
   }
 
-  function selectNode(node: FlowNode) { setSelected(node.id); setLabelDraft(node.label); setFocusLine(node.line); }
+  function selectNode(node: FlowNode) { setSelectedEdge(undefined); setSelected(node.id); setLabelDraft(node.label); setFocusLine(node.line); }
+  function editLayout(next: FlowGraph) {
+    manualGraph.current = next; setGraph(next); setLayoutEdited(true);
+  }
+  function resetLayout() {
+    if (!automaticGraph.current) return;
+    manualGraph.current = null; setGraph(automaticGraph.current); setLayoutEdited(false); setSelectedEdge(undefined); setSelected(undefined); setFit(true);
+  }
   function toggleSimplification(key: keyof SimplificationSettings) {
     setSimplification(current => ({ ...current, [key]: !current[key] }));
     setFit(true);
@@ -236,14 +256,14 @@ export default function App() {
 
         <div className="diagram-panel">
           <div className="panel-heading"><div className="panel-title"><GitBranch size={18} /><h2>Блок-схема</h2><span className={`state-badge ${error ? 'error' : dirty ? 'changed' : ''}`}>{busy ? 'Строится' : error ? 'Ошибка' : dirty ? 'Есть изменения' : <><span className="status-dot" />Готово</>}</span></div><div className="diagram-actions"><button className="icon-button" title="Оформление схемы" aria-label="Оформление схемы" onClick={() => setModal('settings')}><Settings2 size={17} /></button><div className="export-control"><button className="export-button" disabled={!canExport || exporting} aria-expanded={exportOpen} onClick={() => setExportOpen(v => !v)}>{exporting ? <LoaderCircle size={15} className="spin" /> : <ArrowDownToLine size={15} />}Экспорт<ChevronDown size={13} /></button>{exportOpen && <div className="export-menu"><button onClick={() => void download('svg')}><span>Векторная схема <small>SVG · для документов и редактирования</small></span><span className="format">SVG</span></button><button onClick={() => void download('png')}><span>Изображение <small>PNG · для отчёта или презентации</small></span><span className="format">PNG</span></button><button onClick={() => { setExportOpen(false); window.print(); }}><span>Печать / PDF <small>Весь граф на одном листе</small></span><span className="format">PDF</span></button><p>Белый фон, чёрные линии. Без водяных знаков.</p></div>}</div></div></div>
-          <div className="diagram-toolbar"><label htmlFor="function-select">Функция <select id="function-select" value={functionName} disabled={busy || dirty || !functions.length} onChange={e => { setFunctionName(e.target.value); setOverrides({}); setFit(true); }}>{functions.length ? functions.map(fn => <option key={fn.name} value={fn.name}>{fn.name}()</option>) : <option value="main">main()</option>}</select></label><span>SVG · PNG · PDF</span></div>
+          <div className="diagram-toolbar"><label htmlFor="function-select">Функция <select id="function-select" value={functionName} disabled={busy || dirty || !functions.length} onChange={e => { setFunctionName(e.target.value); setOverrides({}); setFit(true); }}>{functions.length ? functions.map(fn => <option key={fn.name} value={fn.name}>{fn.name}()</option>) : <option value="main">main()</option>}</select></label><button className="text-button reset-layout" title="Вернуть автоматическое расположение блоков и стрелок" disabled={!canExport || !layoutEdited} onClick={resetLayout}><RotateCcw size={12} />Сбросить расположение</button></div>
           <div className={`diagram-canvas ${busy ? 'is-loading' : ''} ${monochrome ? 'is-monochrome' : ''}`} ref={canvas}>
-            {graph && !error && <div className="diagram-scroll"><div className="diagram-position" style={{ width: Math.max(canvasSize.width, graph.width * displayZoom + 48), minHeight: Math.max(canvasSize.height, graph.height * displayZoom + 40) }}><div style={{ width: graph.width * displayZoom, height: graph.height * displayZoom }}><div style={{ transform: `scale(${displayZoom})`, transformOrigin: 'top left', width: graph.width, height: graph.height }}><Diagram graph={graph} selected={selected} onSelect={selectNode} numbers={numbers} monochrome={monochrome} dark={dark} /></div></div></div></div>}
+            {graph && !error && <div className="diagram-scroll"><div className="diagram-position" style={{ width: Math.max(canvasSize.width, graph.width * displayZoom + 48), minHeight: Math.max(canvasSize.height, graph.height * displayZoom + 40) }}><div style={{ width: graph.width * displayZoom, height: graph.height * displayZoom }}><div style={{ transform: `scale(${displayZoom})`, transformOrigin: 'top left', width: graph.width, height: graph.height }}><Diagram graph={graph} selected={selected} onSelect={selectNode} selectedEdge={selectedEdge} onSelectEdge={id => { setSelected(undefined); setSelectedEdge(id); }} onLayoutChange={canExport ? editLayout : undefined} onEditStart={() => { setZoom(displayZoom); setFit(false); }} scale={displayZoom} numbers={numbers} monochrome={monochrome} dark={dark} /></div></div></div></div>}
             {(!graph || error) && <div className="canvas-message">{error ? <><span className="message-icon error-icon"><Braces size={28} /></span><h3>Проверим код?</h3><p>{error.message}</p>{error.line && <button className="text-button" onClick={() => setFocusLine(error.line)}>Перейти к строке {error.line}<ArrowRight size={14} /></button>}</> : <><LoaderCircle size={30} className="spin" /><p>Соединяем логику в схему…</p></>}</div>}
             {dirty && !error && <div className="stale-note">Код изменён — постройте схему заново</div>}
             {activeNode && !error && !dirty && <form className="node-inspector" onSubmit={e => { e.preventDefault(); if (labelDraft.trim()) setOverrides(v => ({ ...v, [activeNode.id]: labelDraft.trim() })); }}><div className="inspector-heading"><span>{shapeNames[activeNode.shape]}<small>Строка {activeNode.line}</small></span><button type="button" className="icon-button" aria-label="Закрыть подпись" onClick={() => setSelected(undefined)}><X size={16} /></button></div><label htmlFor="node-label">Подпись блока</label><textarea id="node-label" value={labelDraft} maxLength={500} rows={2} onChange={e => setLabelDraft(e.target.value)} /><div><button className="text-button" type="button" onClick={() => { setOverrides(v => { const next = { ...v }; delete next[activeNode.id]; return next; }); }}><RotateCcw size={12} />Сбросить</button><button className="small-primary" type="submit" disabled={!labelDraft.trim()}>Применить<Check size={13} /></button></div></form>}
           </div>
-          <div className="canvas-footer"><span className="graph-stat">{graph && !error ? `${graph.nodes.length} блоков` : 'Схема алгоритма'}<span className="separator">·</span>{error ? 'Исправьте код и повторите' : 'Нажмите на блок, чтобы изменить подпись'}</span><div className="zoom-controls"><button className="icon-button" aria-label="Уменьшить масштаб" onClick={() => changeZoom(-0.1)} disabled={!graph}><Minus size={15} /></button><span>{Math.round(displayZoom * 100)}%</span><button className="icon-button" aria-label="Увеличить масштаб" onClick={() => changeZoom(0.1)} disabled={!graph}><Plus size={15} /></button><span className="zoom-divider" /><button className="icon-button" aria-label="Вместить схему" title="Вместить схему" onClick={() => setFit(true)} disabled={!graph}><Maximize size={15} /></button></div></div>
+          <div className="canvas-footer"><span className="graph-stat">{graph && !error ? `${graph.nodes.length} блоков` : 'Схема алгоритма'}<span className="separator">·</span>{error ? 'Исправьте код и повторите' : 'Тяни блоки и стрелки · клик по блоку — подпись'}</span><div className="zoom-controls"><button className="icon-button" aria-label="Уменьшить масштаб" onClick={() => changeZoom(-0.1)} disabled={!graph}><Minus size={15} /></button><span>{Math.round(displayZoom * 100)}%</span><button className="icon-button" aria-label="Увеличить масштаб" onClick={() => changeZoom(0.1)} disabled={!graph}><Plus size={15} /></button><span className="zoom-divider" /><button className="icon-button" aria-label="Вместить схему" title="Вместить схему" onClick={() => setFit(true)} disabled={!graph}><Maximize size={15} /></button></div></div>
         </div>
       </section>
       {warnings.length > 0 && !error && <div className="warnings" role="status">{warnings.map(warning => <p key={warning}><CircleHelp size={15} />{warning}</p>)}</div>}
@@ -283,7 +303,7 @@ export default function App() {
       </div>
       <p className="settings-note">{simplification.enabled ? 'Изменения сразу применяются к схеме и экспорту.' : 'Упрощение выключено. Включи его, чтобы применить выбранные приёмы.'} Настройки сохраняются в браузере. Исходный код остаётся прежним.</p>
     </Modal>}
-    {modal === 'help' && <Modal title="От исходника до схемы" subtitle="Три шага — и логику программы можно увидеть." onClose={() => setModal(null)}><ol className="help-steps"><li><span>01</span><div><strong>Вставьте код или откройте .c файл</strong><p>В файле должна быть хотя бы одна функция. Если функций несколько, выберите нужную над схемой.</p></div></li><li><span>02</span><div><strong>Подпишите действия комментариями</strong><p>Ставьте <code>// подпись</code> перед оператором или справа после <code>;</code>. Поддерживаются <code>/* … */</code> и <code>// @label Подпись</code>. Комментарии внутри выражений не становятся подписями. Ручная правка доступна по нажатию на блок.</p></div></li><li><span>03</span><div><strong>Постройте и сохраните</strong><p>Нажмите «Построить схему» или Ctrl / ⌘ + Enter. Экспортируйте в SVG, PNG или выберите «Печать / PDF».</p></div></li></ol><div className="help-support"><h3>Что поддерживается</h3><p>Операторы и объявления, <code>if / else</code>, <code>for</code>, <code>while</code>, <code>do…while</code>, <code>switch</code> с переходом между case, <code>break</code>, <code>continue</code>, <code>return</code>, вызовы функций, вложенные блоки.</p><h3>Границы первой версии</h3><p>Это структурный разбор C, а не компилятор: типы и корректность выражений не проверяются. Макросы не раскрываются; <code>goto</code>, метки, условная компиляция, C++ и расширения компилятора не поддерживаются. Вызовы функций показаны отдельными действиями, без раскрытия тела. До 60 000 символов и 500 блоков в схеме.</p></div><div className="privacy-note"><ShieldCheck size={17} /><p>Код обрабатывается на устройстве. Черновик хранится в этом браузере; ручные подписи блоков действуют до изменения кода или выбора другой функции.</p></div></Modal>}
+    {modal === 'help' && <Modal title="От исходника до схемы" subtitle="Три шага — и логику программы можно увидеть." onClose={() => setModal(null)}><ol className="help-steps"><li><span>01</span><div><strong>Вставьте код или откройте .c файл</strong><p>В файле должна быть хотя бы одна функция. Если функций несколько, выберите нужную над схемой.</p></div></li><li><span>02</span><div><strong>Подпишите действия комментариями</strong><p>Ставьте <code>// подпись</code> перед оператором или справа после <code>;</code>. Поддерживаются <code>/* … */</code> и <code>// @label Подпись</code>. Комментарий к тернарному выражению показывается один раз; в ветках остаются значения. Комментарии внутри выражений не становятся подписями. Нажми на блок, чтобы изменить подпись. Блоки можно перетаскивать, а у выбранной стрелки — двигать участки за круглые маркеры. Для точного сдвига используй клавиши со стрелками. Кнопка «Сбросить расположение» возвращает автоматическую схему.</p></div></li><li><span>03</span><div><strong>Постройте и сохраните</strong><p>Нажмите «Построить схему» или Ctrl / ⌘ + Enter. Экспортируйте в SVG, PNG или выберите «Печать / PDF».</p></div></li></ol><div className="help-support"><h3>Что поддерживается</h3><p>Операторы и объявления, <code>if / else</code>, тернарный оператор <code>условие ? да : нет</code> (в том числе вложенный), <code>for</code>, <code>while</code>, <code>do…while</code>, <code>switch</code> с переходом между case, <code>break</code>, <code>continue</code>, <code>return</code>, вызовы функций, вложенные блоки.</p><h3>Границы первой версии</h3><p>Это структурный разбор C, а не компилятор: типы и корректность выражений не проверяются. Макросы не раскрываются; <code>goto</code>, метки, условная компиляция, C++ и расширения компилятора не поддерживаются. Вызовы функций показаны отдельными действиями, без раскрытия тела. До 60 000 символов и 500 блоков в схеме.</p></div><div className="privacy-note"><ShieldCheck size={17} /><p>Код обрабатывается на устройстве. Черновик хранится в этом браузере; ручные подписи блоков действуют до изменения кода или выбора другой функции. Расположение сохраняется при смене подписей и оформления; новый код, другая функция или настройки упрощения сбрасывают его. Ручные правки схемы не сохраняются после обновления страницы.</p></div></Modal>}
     {toast && <div className="toast" role="status"><Sparkles size={16} />{toast}<button aria-label="Закрыть уведомление" onClick={() => setToast('')}><X size={14} /></button></div>}
     <div className="print-area">{graph && canExport && <><h1>Схема алгоритма · {graph.name}()</h1><Diagram graph={graph} numbers={numbers} monochrome exportMode /></>}</div>
   </>;

@@ -50,6 +50,117 @@ test('hiding return in main updates the preview and SVG, and preserves helper re
   await expect(page.getByRole('button', { name: 'Процесс: return 0', exact: true })).toBeVisible();
 });
 
+test('ternary operators generate editable branches and export with return simplification', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('input[type=file]').setInputFiles({ name: 'ternary.c', mimeType: 'text/plain', buffer: Buffer.from('int main(){\n// Выбрать максимум\nint max = a > b ? a : b;\nreturn max > 0 ? 0 : 1;\n}') });
+  await expect(page.locator('.state-badge')).toHaveText('Готово');
+  await expect(page.getByRole('button', { name: 'Решение: Выбрать максимум', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Процесс: int max = a', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Процесс: int max = b', exact: true })).toBeVisible();
+  await page.getByRole('switch', { name: 'Подписи из комментариев', exact: true }).click();
+  await page.getByRole('button', { name: 'Решение: a > b', exact: true }).click();
+  await page.getByLabel('Подпись блока', { exact: true }).fill('Первое число больше?');
+  await page.getByRole('button', { name: 'Применить', exact: true }).click();
+  await page.getByRole('switch', { name: 'Упрощение схемы', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Решение: Первое число больше?', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Процесс: return 0', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Процесс: return 1', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Экспорт', exact: true }).click();
+  const downloaded = page.waitForEvent('download');
+  await page.getByRole('button', { name: /Векторная схема/ }).click();
+  const svg = await readFile((await (await downloaded).path())!, 'utf8');
+  expect(svg).toContain('int max = a');
+  expect(svg).toContain('int max = b');
+  expect(svg).toContain('Первое число больше?');
+  expect(svg).not.toContain('return 0');
+});
+
+test('moves blocks at the displayed zoom, preserves positions after renaming and exports the edited layout', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('input[type=file]').setInputFiles({ name: 'layout.c', mimeType: 'text/plain', buffer: Buffer.from('int main(){x=1;y=2;return 0;}') });
+  const node = page.getByRole('button', { name: 'Процесс: x=1', exact: true });
+  await expect(node).toBeVisible();
+  const original = await node.getAttribute('transform');
+  const start = await node.boundingBox();
+  const scale = await page.locator('.diagram-canvas .flow-svg').evaluate(svg => (svg as SVGSVGElement).getScreenCTM()!.a);
+  const coordinates = await node.evaluate(element => { const matrix = (element as SVGGElement).transform.baseVal.getItem(0).matrix; return { x: matrix.e, y: matrix.f }; });
+  await page.mouse.move(start!.x + start!.width / 2, start!.y + start!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(start!.x + start!.width / 2 + 45, start!.y + start!.height / 2 + 20, { steps: 5 });
+  await page.mouse.up();
+  const moved = await node.evaluate(element => { const matrix = (element as SVGGElement).transform.baseVal.getItem(0).matrix; return { x: matrix.e, y: matrix.f }; });
+  expect(moved.x - coordinates.x).toBeCloseTo(45 / scale, 1);
+  expect(moved.y - coordinates.y).toBeCloseTo(20 / scale, 1);
+  const transform = await node.getAttribute('transform');
+  await node.press('Enter');
+  await page.getByLabel('Подпись блока', { exact: true }).fill('Первый шаг');
+  await page.getByRole('button', { name: 'Применить', exact: true }).click();
+  const renamed = page.getByRole('button', { name: 'Процесс: Первый шаг', exact: true });
+  await expect(renamed).toHaveAttribute('transform', transform!);
+  await page.getByRole('button', { name: 'Экспорт', exact: true }).click();
+  const downloading = page.waitForEvent('download');
+  await page.getByRole('button', { name: /Векторная схема/ }).click();
+  const exported = await readFile((await (await downloading).path())!, 'utf8');
+  expect(exported).toContain(`transform="${transform}"`);
+  expect(exported).toContain('Первый шаг');
+  expect(exported).not.toContain('edge-handle');
+  await page.getByRole('button', { name: 'Сбросить расположение', exact: true }).click();
+  await expect(renamed).toHaveAttribute('transform', original!);
+  await expect(page.getByRole('button', { name: 'Сбросить расположение', exact: true })).toBeDisabled();
+});
+
+test('drags arrow segments with fixed endpoints and supports keyboard adjustments', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('input[type=file]').setInputFiles({ name: 'arrow.c', mimeType: 'text/plain', buffer: Buffer.from('int main(){return 0;}') });
+  await expect(page.locator('.state-badge')).toHaveText('Готово');
+  await expect(page.locator('.diagram-canvas .flow-node')).toHaveCount(3);
+  const line = page.locator('.diagram-canvas .edge-line').first();
+  const before = (await line.getAttribute('d'))!.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+  const midpoint = await line.evaluate(element => {
+    const path = element as SVGPathElement;
+    const point = path.getPointAtLength(path.getTotalLength() / 2).matrixTransform(path.getScreenCTM()!);
+    return { x: point.x, y: point.y };
+  });
+  await page.mouse.move(midpoint.x, midpoint.y);
+  await page.mouse.down();
+  await page.mouse.move(midpoint.x + 45, midpoint.y, { steps: 5 });
+  await page.mouse.up();
+  const after = (await line.getAttribute('d'))!.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+  expect(after).not.toEqual(before);
+  expect(after.slice(0, 2)).toEqual(before.slice(0, 2));
+  expect(after.slice(-2)).toEqual(before.slice(-2));
+  for (let i = 2; i < after.length; i += 2) expect(after[i] === after[i - 2] || after[i + 1] === after[i - 1]).toBe(true);
+  const path = await line.getAttribute('d');
+  await page.locator('.edge-handle.vertical').first().press('ArrowRight');
+  await expect(line).not.toHaveAttribute('d', path!);
+  await page.screenshot({ path: '/private/tmp/bsuir-flow-arrow-editing.png', fullPage: true });
+  await page.getByRole('button', { name: 'Сбросить расположение', exact: true }).click();
+  expect((await line.getAttribute('d'))!.match(/-?\d+(?:\.\d+)?/g)!.map(Number)).toEqual(before);
+});
+
+test('supports touch dragging and clears manual layout when the code changes', async ({ browser }) => {
+  const context = await browser.newContext({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  try {
+    await page.goto('http://127.0.0.1:4173');
+    await page.locator('input[type=file]').setInputFiles({ name: 'touch.c', mimeType: 'text/plain', buffer: Buffer.from('int main(){x=1;return 0;}') });
+    const node = page.getByRole('button', { name: 'Процесс: x=1', exact: true });
+    await node.scrollIntoViewIfNeeded();
+    const before = await node.getAttribute('transform');
+    const box = (await node.boundingBox())!;
+    const session = await context.newCDPSession(page);
+    const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...point, id: 1 }] });
+    await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: point.x + 30, y: point.y + 10, id: 1 }] });
+    await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await expect(node).not.toHaveAttribute('transform', before!);
+    await expect(page.getByRole('button', { name: 'Сбросить расположение', exact: true })).toBeEnabled();
+    await page.locator('input[type=file]').setInputFiles({ name: 'new.c', mimeType: 'text/plain', buffer: Buffer.from('int main(){x=2;return 0;}') });
+    await expect(page.getByRole('button', { name: 'Процесс: x=2', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Сбросить расположение', exact: true })).toBeDisabled();
+  } finally { await context.close(); }
+});
+
 test('simplification options work independently and survive the master toggle and reload', async ({ page }) => {
   await page.goto('/');
   await page.locator('input[type=file]').setInputFiles({ name: 'simplify.c', mimeType: 'text/plain', buffer: Buffer.from('int main(){ int a=0; int b=1; while(a<3){ if(b) break; a++; b++; } return 0; }') });
@@ -164,7 +275,7 @@ test('exports standalone SVG, valid PNG and a single PDF page', async ({ page })
 
 test('all examples generate and settings update the preview', async ({ page }) => {
   await page.goto('/');
-  for (const name of ['Факториал числа', 'Алгоритм Евклида', 'Меню программы']) {
+  for (const name of ['Факториал числа', 'Алгоритм Евклида', 'Меню программы', 'Тернарные операторы']) {
     await page.getByRole('navigation').getByRole('button', { name: 'Примеры', exact: true }).click();
     await page.getByRole('dialog').getByRole('button', { name: new RegExp(name) }).click();
     await expect(page.locator('.state-badge')).toHaveText('Готово');

@@ -87,4 +87,28 @@ int main(void) {
 }
 `,
   },
+  {
+    id: 'ternary', title: 'Тернарные операторы', description: 'Выбор значения через ?: и вложенные условия', tag: 'Ветвления',
+    code: `#include <stdio.h>
+
+int sign(int n) {
+    // Определить знак числа
+    return n > 0 ? 1 : n < 0 ? -1 : 0;
+}
+
+int main(void) {
+    int a, b;
+    scanf("%d %d", &a, &b); // Ввести два числа
+
+    // Выбрать большее число
+    int max = a > b ? a : b;
+    printf("Максимум: %d\\n", max);
+
+    // Числа равны?
+    puts(a == b ? "Числа равны" : "Числа различаются");
+    printf("Знак максимума: %d", sign(max));
+    return 0;
+}
+`,
+  },
 ];

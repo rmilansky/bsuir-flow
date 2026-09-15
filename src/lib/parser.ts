@@ -115,11 +115,16 @@ class Parser {
   }
   until(stop: string): Token[] {
     const result: Token[] = [], stack: string[] = [];
+    let conditionalDepth = 0;
     const closing: Record<string, string> = { '(': ')', '[': ']', '{': '}' };
     while (this.peek()) {
       const t = this.current();
       if (t.kind !== 'string' && t.kind !== 'comment') {
-        if (!stack.length && t.value === stop) return result;
+        if (!stack.length && stop === ':' && t.value === '?') conditionalDepth++;
+        if (!stack.length && t.value === stop) {
+          if (stop !== ':' || !conditionalDepth) return result;
+          conditionalDepth--;
+        }
         if (closing[t.value]) stack.push(closing[t.value]);
         else if ([')', ']', '}'].includes(t.value)) {
           if (stack.pop() !== t.value) throw new ParseError(`Лишняя или незакрытая скобка «${t.value}».`, t.line);

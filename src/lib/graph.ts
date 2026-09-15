@@ -1,5 +1,6 @@
 import type { CFunction, Statement } from './parser';
 import { tokenize } from './parser';
+import { groupExpression, planExpression, type ExpressionPlan } from './expressions';
 
 export type Shape = 'terminator' | 'process' | 'decision' | 'data' | 'predefined' | 'preparation' | 'junction';
 export type FlowNode = {
@@ -97,6 +98,7 @@ export function buildGraph(fn: CFunction, options: GraphOptions): FlowGraph {
   const nodes: FlowNode[] = [], edges: FlowEdge[] = [], warnings: string[] = [];
   const mergeCandidates = new Set<string>();
   let serial = 0;
+  let expressionSteps = 0;
   const node = (shape: Shape, code: string, statement?: Statement, label?: string): string => {
     const id = `n${serial++}`;
     const text = options.overrides?.[id] ?? label ?? (options.comments && statement?.comment ? statement.comment : code);
@@ -111,12 +113,47 @@ export function buildGraph(fn: CFunction, options: GraphOptions): FlowGraph {
     for (let i = body.length - 1; i >= 0; i--) entry = build(body[i], entry, context);
     return entry;
   };
-  const build = (s: Statement, next: string, context: Context): string => {
-    if (s.kind === 'block') return sequence(s.body!, next, context);
-    if (s.kind === 'statement' && !s.code) return next;
+  const expression = (plan: ExpressionPlan, consume: (code: string) => string, s: Statement): string => {
+    if (++expressionSteps > 2000) throw new Error('Тернарные выражения создают слишком много веток. Разделите вычисления на несколько операторов.');
+    if (plan.kind === 'value') return consume(plan.code);
+    if (plan.kind === 'choice') {
+      const yes = expression(plan.yes, consume, s), no = expression(plan.no, consume, s);
+      return expression(plan.condition, code => {
+        const decision = node('decision', code, s);
+        edge(decision, yes, 'Да'); edge(decision, no, 'Нет');
+        return decision;
+      }, s);
+    }
+    if (plan.kind === 'sequence') {
+      let entry = expression(plan.steps.at(-1)!, consume, s);
+      for (let i = plan.steps.length - 2; i >= 0; i--) {
+        const next = entry;
+        entry = expression(plan.steps[i], code => action({ ...s, kind: 'statement', code }, next, {}), s);
+      }
+      return entry;
+    }
+    const combine = (index: number, code: string): string => {
+      if (index === plan.parts.length) return consume(code);
+      const part = plan.parts[index];
+      return typeof part === 'string' ? combine(index + 1, code + part)
+        : expression(part.value, value => combine(index + 1, code + (part.group ? groupExpression(value) : value)), s);
+    };
+    return combine(0, '');
+  };
+  const expand = (plan: ExpressionPlan, s: Statement, consume: (code: string) => string): string => {
+    const entry = expression(plan, consume, { ...s, comment: undefined });
+    if (s.comment) {
+      const index = nodes.findIndex(node => node.id === entry);
+      if (index >= 0) nodes[index] = sizeNode({ ...nodes[index], comment: s.comment,
+        label: options.overrides?.[entry] ?? (options.comments ? s.comment : nodes[index].code) });
+    }
+    return entry;
+  };
+  const action = (s: Statement, next: string, context: Context, forcedShape?: Shape): string => {
+    const plan = planExpression(s.code, s.line);
+    if (plan) return expand(plan, s, code => action({ ...s, code, comment: undefined }, next, context, forcedShape));
     if (s.kind === 'return' && fn.name === 'main' && options.hideExitReturn && isExitCode(s.code)) {
-      // Reserve the same ID as a visible return, keeping custom labels on every
-      // other node attached to the right statement when the option is toggled.
+      // Reserve the same ID as a visible return so manual labels stay attached.
       serial++;
       return end;
     }
@@ -124,51 +161,79 @@ export function buildGraph(fn: CFunction, options: GraphOptions): FlowGraph {
       serial++;
       return (s.kind === 'break' ? context.breakTo : context.continueTo)!;
     }
+    let shape: Shape = forcedShape || 'process';
+    const tokens = tokenize(s.code).tokens;
+    const calls = tokens.filter((t, i) => t.kind === 'word' && tokens[i + 1]?.value === '(' && !['sizeof', '_Alignof', 'return'].includes(t.value));
+    if (s.kind === 'statement' && !forcedShape) {
+      if (calls.some(t => /^(scanf|printf|puts|putchar|getchar|fgets|fputs|fscanf|fprintf|fread|fwrite|gets_s)$/.test(t.value))) shape = 'data';
+      else if (calls.length) shape = 'predefined';
+    }
+    const id = node(shape, s.code, s);
+    if (s.kind === 'statement' && shape === 'process' && !forcedShape) mergeCandidates.add(id);
+    if (s.kind === 'return') edge(id, end);
+    else if (s.kind === 'break') edge(id, context.breakTo!);
+    else if (s.kind === 'continue') edge(id, context.continueTo!);
+    else edge(id, next);
+    return id;
+  };
+  const build = (s: Statement, next: string, context: Context): string => {
+    if (s.kind === 'block') return sequence(s.body!, next, context);
+    if (s.kind === 'statement' && !s.code) return next;
     if (s.kind === 'if') {
+      const plan = planExpression(s.code, s.line);
+      if (plan) {
+        const yes = sequence(s.body!, next, context), no = sequence(s.alternate || [], next, context);
+        return expand(plan, s, code => {
+          const decision = node('decision', code, { ...s, comment: undefined });
+          edge(decision, yes, 'Да'); edge(decision, no, 'Нет');
+          return decision;
+        });
+      }
       const decision = node('decision', s.code, s);
       edge(decision, sequence(s.body!, next, context), 'Да');
       edge(decision, sequence(s.alternate || [], next, context), 'Нет');
       return decision;
     }
     if (['for', 'while', 'do'].includes(s.kind)) {
-      const decision = node('decision', s.code || 'Истина', s);
+      const plan = planExpression(s.code, s.line);
+      const decision = node(plan ? 'junction' : 'decision', s.code || 'Истина', s);
       let repeat = decision;
-      if (s.kind === 'for' && s.update) { repeat = node('process', s.update, { ...s, comment: undefined }); edge(repeat, decision); }
+      if (s.kind === 'for' && s.update) repeat = action({ ...s, kind: 'statement', code: s.update, comment: undefined }, decision, context, 'process');
       const body = sequence(s.body!, repeat, { breakTo: next, continueTo: repeat });
-      edge(decision, body, 'Да');
-      if (s.kind !== 'for' || s.code) edge(decision, next, 'Нет');
+      if (plan) {
+        const entry = expand(plan, s, code => {
+          const test = node('decision', code, { ...s, comment: undefined });
+          edge(test, body, 'Да'); edge(test, next, 'Нет');
+          return test;
+        });
+        edge(decision, entry);
+      } else {
+        edge(decision, body, 'Да');
+        if (s.kind !== 'for' || s.code) edge(decision, next, 'Нет');
+      }
       let entry = s.kind === 'do' ? body : decision;
       if (s.kind === 'for' && s.init) {
-        const init = node('preparation', s.init, { ...s, comment: undefined }); edge(init, decision); entry = init;
+        entry = action({ ...s, kind: 'statement', code: s.init, comment: undefined }, decision, context, 'preparation');
       }
       return entry;
     }
     if (s.kind === 'switch') {
-      const decision = node('decision', s.code, s);
+      const plan = planExpression(s.code, s.line);
+      const decision = plan ? undefined : node('decision', s.code, s);
       let fallthrough = next;
       const branches: { entry: string; label: string }[] = [];
       for (const branch of [...s.cases!].reverse()) {
         fallthrough = sequence(branch.body, fallthrough, { ...context, breakTo: next });
         branches.unshift({ entry: fallthrough, label: branch.value ?? 'Иначе' });
       }
-      branches.forEach(branch => edge(decision, branch.entry, branch.label));
-      if (!s.cases!.some(c => c.value === null)) edge(decision, next, 'Иначе');
-      return decision;
+      const connect = (id: string) => {
+        branches.forEach(branch => edge(id, branch.entry, branch.label));
+        if (!s.cases!.some(c => c.value === null)) edge(id, next, 'Иначе');
+        return id;
+      };
+      return plan ? expand(plan, s, code => connect(node('decision', code, { ...s, comment: undefined }))) : connect(decision!);
     }
-    let shape: Shape = 'process';
-    const tokens = tokenize(s.code).tokens;
-    const calls = tokens.filter((t, i) => t.kind === 'word' && tokens[i + 1]?.value === '(' && !['sizeof', '_Alignof', 'return'].includes(t.value));
-    if (s.kind === 'statement') {
-      if (calls.some(t => /^(scanf|printf|puts|putchar|getchar|fgets|fputs|fscanf|fprintf|fread|fwrite|gets_s)$/.test(t.value))) shape = 'data';
-      else if (calls.length) shape = 'predefined';
-    }
-    const id = node(shape, s.code, s);
-    if (s.kind === 'statement' && shape === 'process') mergeCandidates.add(id);
-    if (s.kind === 'return') edge(id, end);
-    else if (s.kind === 'break') edge(id, context.breakTo!);
-    else if (s.kind === 'continue') edge(id, context.continueTo!);
-    else edge(id, next);
-    return id;
+    return action(s, next, context);
   };
   const entry = sequence(fn.body, end, {});
   const start = node('terminator', 'Начало');
