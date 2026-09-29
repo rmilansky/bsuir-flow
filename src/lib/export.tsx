@@ -2,8 +2,9 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import Diagram from '../components/Diagram';
 import type { FlowGraph } from './graph';
 import { mermaidSource } from './mermaid';
+import { drawioSource } from './drawio';
 
-export type ExportFormat = 'svg' | 'png' | 'mermaid';
+export type ExportFormat = 'svg' | 'png' | 'mermaid' | 'drawio';
 
 export function svgSource(graph: FlowGraph, numbers: boolean): string {
   return '<?xml version="1.0" encoding="UTF-8"?>\n' + renderToStaticMarkup(<Diagram graph={graph} numbers={numbers} monochrome exportMode />);
@@ -17,6 +18,10 @@ export function downloadBlob(blob: Blob, filename: string) {
 }
 
 export async function exportDiagram(graph: FlowGraph, format: ExportFormat, numbers: boolean) {
+  if (format === 'drawio') {
+    downloadBlob(new Blob([drawioSource(graph, numbers)], { type: 'application/xml;charset=utf-8' }), `${graph.name}-flowchart.drawio`);
+    return;
+  }
   if (format === 'mermaid') {
     downloadBlob(new Blob([mermaidSource(graph, numbers)], { type: 'text/plain;charset=utf-8' }), `${graph.name}-flowchart.mmd`);
     return;

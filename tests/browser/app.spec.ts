@@ -304,6 +304,44 @@ test('exports Mermaid with the current captions, branches, numbering and simplif
   await expect(page.getByText('Mermaid готов к скачиванию', { exact: true })).toBeVisible();
 });
 
+test('exports a draw.io file with editable cells, literal captions and moved geometry', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('input[type=file]').setInputFiles({ name: 'drawio.c', mimeType: 'text/plain', buffer: Buffer.from('int main(){if(a) work(); else puts("b"); return 0;}') });
+  const block = page.getByRole('button', { name: 'Предопределённый процесс: work()', exact: true });
+  await expect(block).toBeVisible();
+  await block.press('ArrowRight');
+  const moved = await block.evaluate(element => { const matrix = (element as SVGGElement).transform.baseVal.getItem(0).matrix; return { x: matrix.e, y: matrix.f }; });
+  await block.press('Enter');
+  await page.getByLabel('Подпись блока', { exact: true }).fill('<b>Текст</b> & "кавычки"\nНовая строка');
+  await page.getByRole('button', { name: 'Применить', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Предопределённый процесс: <b>Текст/ })).toBeVisible();
+  const nodeCount = await page.locator('.diagram-canvas .flow-node').count();
+  const edgeCount = await page.locator('.diagram-canvas .flow-edge').count();
+  await page.getByRole('button', { name: 'Экспорт', exact: true }).click();
+  const downloading = page.waitForEvent('download');
+  await page.getByRole('button', { name: /draw.io \/ diagrams.net/ }).click();
+  const file = await downloading;
+  expect(file.suggestedFilename()).toBe('main-flowchart.drawio');
+  await file.saveAs('/private/tmp/bsuir-flow-export.drawio');
+  const source = await readFile((await file.path())!, 'utf8');
+  const imported = await page.evaluate(xml => {
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    return { error: doc.querySelector('parsererror')?.textContent, root: doc.documentElement.nodeName,
+      nodes: [...doc.querySelectorAll('mxCell[vertex="1"]')].map(cell => ({ id: cell.id, label: cell.getAttribute('value'), x: Number(cell.querySelector('mxGeometry')?.getAttribute('x')), y: Number(cell.querySelector('mxGeometry')?.getAttribute('y')) })),
+      edges: [...doc.querySelectorAll('mxCell[edge="1"]')].map(cell => ({ source: cell.getAttribute('source'), target: cell.getAttribute('target'), label: cell.getAttribute('value') })) };
+  }, source);
+  expect(imported.error).toBeUndefined();
+  expect(imported.root).toBe('mxfile');
+  expect(imported.nodes).toHaveLength(nodeCount);
+  expect(imported.edges).toHaveLength(edgeCount);
+  expect(imported.nodes).toContainEqual(expect.objectContaining({ label: '<b>Текст</b> & "кавычки"\nНовая строка', ...moved }));
+  for (const edge of imported.edges) {
+    expect(imported.nodes.some(node => node.id === edge.source)).toBe(true);
+    expect(imported.nodes.some(node => node.id === edge.target)).toBe(true);
+  }
+  expect(imported.edges.map(edge => edge.label)).toEqual(expect.arrayContaining(['Да', 'Нет']));
+});
+
 test('all examples generate and settings update the preview', async ({ page }) => {
   await page.goto('/');
   for (const name of ['Факториал числа', 'Алгоритм Евклида', 'Меню программы', 'Тернарные операторы']) {
