@@ -273,6 +273,37 @@ test('exports standalone SVG, valid PNG and a single PDF page', async ({ page })
   expect(pdf.toString().match(/\/Type \/Page\b/g)).toHaveLength(1);
 });
 
+test('exports Mermaid with the current captions, branches, numbering and simplification', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('input[type=file]').setInputFiles({ name: 'mermaid.c', mimeType: 'text/plain', buffer: Buffer.from('int main(){\n// Выбрать максимум\nint max = a > b ? a : b;\nreturn 0;\n}') });
+  const decision = page.getByRole('button', { name: 'Решение: Выбрать максимум', exact: true });
+  await expect(decision).toBeVisible();
+  await decision.click();
+  await page.getByLabel('Подпись блока', { exact: true }).fill('a < b & "выбор"\nВторая строка');
+  await page.getByRole('button', { name: 'Применить', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Решение: a < b/ })).toBeVisible();
+  await page.getByRole('switch', { name: 'Упрощение схемы', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Процесс: return 0', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Оформление схемы', exact: true }).click();
+  await page.getByRole('switch', { name: 'Номера блоков', exact: true }).click();
+  await page.getByRole('button', { name: 'Закрыть окно', exact: true }).click();
+  await page.getByRole('button', { name: 'Экспорт', exact: true }).click();
+  const event = page.waitForEvent('download');
+  await page.getByRole('button', { name: /Mermaid Исходник/ }).click();
+  const file = await event;
+  expect(file.suggestedFilename()).toBe('main-flowchart.mmd');
+  const source = await readFile((await file.path())!, 'utf8');
+  expect(source).toMatch(/^flowchart TD\n/);
+  expect(source).toContain('1. Начало');
+  expect(source).toContain('a #60; b #38; #34;выбор#34;<br/>Вторая строка');
+  expect(source).toContain('int max = a');
+  expect(source).toContain('int max = b');
+  expect(source).toContain('-->|"Да"|');
+  expect(source).toContain('-->|"Нет"|');
+  expect(source).not.toContain('return 0');
+  await expect(page.getByText('Mermaid готов к скачиванию', { exact: true })).toBeVisible();
+});
+
 test('all examples generate and settings update the preview', async ({ page }) => {
   await page.goto('/');
   for (const name of ['Факториал числа', 'Алгоритм Евклида', 'Меню программы', 'Тернарные операторы']) {

@@ -1,6 +1,9 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import Diagram from '../components/Diagram';
 import type { FlowGraph } from './graph';
+import { mermaidSource } from './mermaid';
+
+export type ExportFormat = 'svg' | 'png' | 'mermaid';
 
 export function svgSource(graph: FlowGraph, numbers: boolean): string {
   return '<?xml version="1.0" encoding="UTF-8"?>\n' + renderToStaticMarkup(<Diagram graph={graph} numbers={numbers} monochrome exportMode />);
@@ -13,7 +16,11 @@ export function downloadBlob(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export async function exportDiagram(graph: FlowGraph, format: 'svg' | 'png', numbers: boolean) {
+export async function exportDiagram(graph: FlowGraph, format: ExportFormat, numbers: boolean) {
+  if (format === 'mermaid') {
+    downloadBlob(new Blob([mermaidSource(graph, numbers)], { type: 'text/plain;charset=utf-8' }), `${graph.name}-flowchart.mmd`);
+    return;
+  }
   const svg = new Blob([svgSource(graph, numbers)], { type: 'image/svg+xml;charset=utf-8' });
   if (format === 'svg') { downloadBlob(svg, `${graph.name}-flowchart.svg`); return; }
   const url = URL.createObjectURL(svg);
